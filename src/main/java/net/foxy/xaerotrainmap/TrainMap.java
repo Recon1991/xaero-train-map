@@ -3,7 +3,6 @@ package net.foxy.xaerotrainmap;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.logging.LogUtils;
-import com.simibubi.create.CreateClient;
 import com.simibubi.create.compat.trainmap.TrainMapManager;
 import com.simibubi.create.compat.trainmap.TrainMapSyncClient;
 import com.simibubi.create.foundation.gui.RemovedGuiUtils;
@@ -13,12 +12,12 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.FormattedText;
 import net.minecraft.util.Mth;
 import net.neoforged.neoforge.client.event.InputEvent.MouseButton.Pre;
 import xaero.map.gui.GuiMap;
 
 import java.util.List;
+import java.lang.reflect.Method;
 
 public class TrainMap {
 
@@ -64,8 +63,20 @@ public class TrainMap {
 		Minecraft mc = Minecraft.getInstance();
 		Window window = mc.getWindow();
 
-		double guiScale = (double) window.getScreenWidth() / window.getGuiScaledWidth();
-		double scale = mapScale / guiScale;
+		// Use Minecraft's GUI scale directly instead of computing it
+		double scale = mapScale / window.getGuiScale();
+
+		// Log detailed platform info to help with macOS scaling differences
+		String os = System.getProperty("os.name").toLowerCase();
+		LogUtils.getLogger().info("[TrainMap] OS Detected: {}", os);
+		LogUtils.getLogger().info("[TrainMap] Screen (raw): {}x{}, GUI scaled: {}x{}, GUI scale: {}, final scale: {}",
+				window.getScreenWidth(),
+				window.getScreenHeight(),
+				window.getGuiScaledWidth(),
+				window.getGuiScaledHeight(),
+				window.getGuiScale(),
+				scale
+		);
 
 		PoseStack pose = graphics.pose();
 		pose.pushPose();
@@ -74,19 +85,49 @@ public class TrainMap {
 		pose.scale((float) scale, (float) scale, 1);
 		pose.translate(-x, -z, 0);
 
-		Rect2i bounds =
-			new Rect2i(Mth.floor(-screen.width / 2.0f / scale + x), Mth.floor(-screen.height / 2.0f / scale + z),
-				Mth.floor(screen.width / scale), Mth.floor(screen.height / scale));
-		//LogUtils.getLogger().warn(bounds.getX() + " " + bounds.getY() + " " + bounds.getWidth() + " " + bounds.getHeight());
-		//LogUtils.getLogger().warn(String.valueOf(CreateClient.RAILWAYS.trains.values()));
-		List<FormattedText> tooltip =
-			TrainMapManager.renderAndPick(graphics, Mth.floor(mPosX), Mth.floor(mPosZ), false, bounds);
+		Rect2i bounds = new Rect2i(
+				Mth.floor(-screen.width / 2.0f / scale + x),
+				Mth.floor(-screen.height / 2.0f / scale + z),
+				Mth.floor(screen.width / scale),
+				Mth.floor(screen.height / scale)
+		);
+
+		try {
+			// Try to call new signature: (GuiGraphics, int, int, float, boolean, Rect2i)
+			Method m = TrainMapManager.class.getDeclaredMethod(
+					"renderAndPick",
+					GuiGraphics.class,
+					int.class,
+					int.class,
+					float.class,
+					boolean.class,
+					Rect2i.class
+			);
+			m.invoke(null, graphics, mPosX, mPosZ, pt, false, bounds);
+		} catch (NoSuchMethodException e) {
+			try {
+				// Fallback to old signature: (GuiGraphics, int, int, boolean, Rect2i)
+				Method fallback = TrainMapManager.class.getDeclaredMethod(
+						"renderAndPick",
+						GuiGraphics.class,
+						int.class,
+						int.class,
+						boolean.class,
+						Rect2i.class
+				);
+				fallback.invoke(null, graphics, mPosX, mPosZ, false, bounds);
+			} catch (Throwable t2) {
+				LogUtils.getLogger().error("Both signatures of renderAndPick failed.", t2);
+			}
+		} catch (Throwable t) {
+			LogUtils.getLogger().error("Failed to invoke renderAndPick reflectively.", t);
+		}
 
 		pose.popPose();
 
-		if (!renderToggleWidgetAndTooltip(graphics, screen, mX, mY) && tooltip != null)
-			RemovedGuiUtils.drawHoveringText(graphics, tooltip, mX, mY, screen.width, screen.height, 256, mc.font);
+		renderToggleWidgetAndTooltip(graphics, screen, mX, mY);
 	}
+
 
 	private static boolean renderToggleWidgetAndTooltip(GuiGraphics graphics, Screen screen, int mouseX, int mouseY) {
 		TrainMapManager.renderToggleWidget(graphics, 3, 30);
